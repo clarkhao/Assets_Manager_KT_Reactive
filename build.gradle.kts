@@ -23,6 +23,12 @@ dependencies {
 	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testImplementation("io.projectreactor:reactor-test")
+
+	implementation("org.springdoc:springdoc-openapi-starter-webflux-ui:2.1.0")
+	implementation("software.amazon.awssdk:s3:2.20.46")
+	implementation("org.springframework.boot:spring-boot-devtools:3.0.5")
+	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
+
 }
 
 tasks.withType<KotlinCompile> {
