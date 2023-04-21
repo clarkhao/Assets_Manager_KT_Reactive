@@ -1,63 +1,70 @@
 package com.clark.totoro.assets.controller
 
+import com.clark.totoro.assets.annotation.ToLog
 import com.clark.totoro.assets.config.S3Config
-import com.clark.totoro.assets.model.S3File
+import com.clark.totoro.assets.model.FileMerge
+import com.clark.totoro.assets.model.S3FileUrl
+import com.clark.totoro.assets.service.FileService
+import jakarta.validation.constraints.Min
 import kotlinx.coroutines.*
 import org.springframework.beans.factory.annotation.Value
-import org.springframework.core.io.ClassPathResource
-import org.springframework.http.server.reactive.ServerHttpResponse
+import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.*
-import software.amazon.awssdk.services.s3.model.GetObjectRequest
-import software.amazon.awssdk.services.s3.model.ListObjectsRequest
-import software.amazon.awssdk.services.s3.model.S3Object
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.nio.charset.Charset
-import java.time.LocalDate
+import org.springframework.web.server.ServerWebExchange
+import reactor.core.publisher.Flux
+import reactor.core.publisher.Mono
+import software.amazon.awssdk.services.s3.model.Delete
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier
+import java.net.URI
+
 
 @RestController
-class FilesController(var s3: S3Config) {
+@Validated
+class FilesController(var s3: S3Config, var service: FileService) {
     @Value("\${files.limit}")
+    @field:Min(value = 1, message = "items per page at lease 1")
     val limit: Int = 0
-    @PostMapping("file")
-    suspend fun createFiles() {
 
+    @PostMapping("file/{names}")
+    suspend fun createFiles(@PathVariable names: List<String>): Flux<S3FileUrl> {
+        return service.clientUpload(names)
     }
+
     @GetMapping("files")
-    suspend fun listFiles(@RequestParam page: Int): Sequence<S3File> {
-        val request: ListObjectsRequest = ListObjectsRequest.builder()
-            .bucket("doggycatty")
-            .build()
-        val res = CoroutineScope(Dispatchers.IO).async {
-                s3.amazonS3().listObjects(request)
-            }
-        val seq = res.await().contents().filter { it.key().startsWith("assets/users/") }
-            .map { el -> S3File(el.key(), el.lastModified().toString()) }.asSequence()
-        return seq.sortedBy { it.date }.filterIndexed { i, el -> i > limit * (page - 1) }.take(limit)
+    @ToLog
+    suspend fun listFiles(@RequestParam page: Int, exchange: ServerWebExchange): Flux<FileMerge> {
+        val files = service.getFileList(page, limit)
+        return service.getPresignedFileList(files)
     }
 
     @GetMapping("files/{name}")
-    suspend fun getFile(@PathVariable name: String, response: ServerHttpResponse): ByteArrayInputStream {
-        val request: GetObjectRequest = GetObjectRequest.builder()
-            .key("assets/users/$name")
-            .bucket("doggycatty")
-            .build()
-        val res = CoroutineScope(Dispatchers.IO).async {
-            s3.amazonS3().getObject(request).response()
-        }
-
-    }
-
-    @PutMapping("files/{name}")
-    fun updateFile(@PathVariable name: String) {
-    }
-
-    @DeleteMapping("files/{name}")
-    fun deleteFile(@PathVariable name: String) {
+    suspend fun getFile(@PathVariable name: String, exchange: ServerWebExchange): Mono<ResponseEntity<Void>> {
+        val url = service.getPresignedFile(name)
+        val headers = HttpHeaders()
+        headers.location = URI.create(url)
+        return Mono.just(ResponseEntity<Void>(headers, HttpStatus.MOVED_PERMANENTLY))
+        /*
+        exchange.response.setStatusCode(HttpStatus.PERMANENT_REDIRECT)
+        exchange.response.headers.set("Location", url)
+        return exchange.response.setComplete()
+         */
     }
 
     @DeleteMapping("files/{names}")
-    fun deleteFileGroup(@PathVariable names: List<String>) {
+    fun deleteFileGroup(@PathVariable names: List<String>): List<String> {
+        val keys = names.map { ObjectIdentifier.builder().key("assets/users/$it").build() }
+        val dels = Delete.builder()
+            .objects(keys)
+            .build()
+        val delRequest = DeleteObjectsRequest.builder()
+            .bucket("doggycatty")
+            .delete(dels)
+            .build()
+        val res = s3.s3Client().deleteObjects(delRequest).deleted()
+        return res.map { it.key() }
     }
 }
