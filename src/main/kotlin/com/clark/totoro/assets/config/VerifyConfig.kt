@@ -15,6 +15,7 @@ class VerifyConfig {
     fun getContentType(): Map<String, String> {
         return mapOf<String, String>(
             "jpeg" to jpg,
+            "jpg" to jpg,
             "png" to png
         )
     }
