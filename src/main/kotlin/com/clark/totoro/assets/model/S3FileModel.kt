@@ -13,3 +13,5 @@ data class PresignedImage(
 )
 data class Uploaded(val uploaded: Int, val limit: Int)
 data class FileList(val files: List<String>)
+
+data class FileAndRecord(val files: List<String>, val records: List<PresignedImage>)

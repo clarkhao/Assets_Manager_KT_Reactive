@@ -11,18 +11,16 @@ import jakarta.validation.constraints.Min
 import kotlinx.coroutines.*
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Value
-import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
-import org.springframework.http.ResponseEntity
-import org.springframework.validation.annotation.Validated
+import org.springframework.stereotype.Component
 import org.springframework.web.bind.annotation.*
+import org.springframework.web.reactive.function.server.*
+import org.springframework.web.server.ResponseStatusException
 import software.amazon.awssdk.services.s3.model.Delete
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier
-import java.net.URI
 
-@RestController
-@Validated
+@Component
 class FilesController(
     val s3: S3Config,
     val aws: FileService,
@@ -37,12 +35,14 @@ class FilesController(
     @field:Min(value = 1, message = "items per page at lease 1")
     val limit: Int = 0
 
-    @CrossOrigin()
-    @GetMapping("api/files/upload/{names}")
     suspend fun createFiles(
-        @PathVariable names: Array<String>,
-        @RequestHeader("Authorization") token: String
-    ): List<S3FileUrl> {
+        request: ServerRequest
+    ): ServerResponse {
+        val token = request.headers().header("Authorization").first() ?: throw ResponseStatusException(
+            HttpStatus.UNAUTHORIZED,
+            "authorization header missing"
+        )
+        val names = request.pathVariable("names").split(",")
         val resolvedToken = utils.resolveToken(token)
         val user = auth.authService().parseJwtToken(resolvedToken)
         val id = user.id
@@ -50,109 +50,62 @@ class FilesController(
         val userId = id.let { utils.base64Encoding(it) }
         val count = names.size
         //coroutines here concurrently
-        val scope = CoroutineScope(Dispatchers.IO)
-        try {
-            val combined = scope.async {
-                try {
-                    //current.await() + size > limit.await()
-                    val uploaded = async { aws.isOutLimit(userId) }
-                    val pass = async { userId.let { rbac.cas().enforce(it, "${owner}_file", "write") } }
-                    val isLimited = uploaded.await().uploaded + count > uploaded.await().limit
-                    if (isLimited) throw Exception("out of limit")
-                    else pass.await()
-                } catch (e: Exception) {
-                    println(e.message)
-                    throw Exception(e.message)
-                }
-            }
-            return if (combined.await()) aws.clientUpload(
+        val combined = try {
+            //current.await() + size > limit.await()
+            val uploaded = aws.isOutLimit(userId)
+            val pass = userId.let { rbac.cas().enforce(it, "${owner}_file", "write") }
+            val isLimited = uploaded.uploaded + count > uploaded.limit
+            if (isLimited) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "out of limit")
+            else pass
+        } catch (e: Exception) {
+            println(e.message)
+            throw Exception(e.message)
+        }
+        return if (combined) ServerResponse.ok().bodyValueAndAwait(
+            aws.clientUpload(
                 names,
                 userId
-            ) else throw Exception("Authorization failed")
-        } catch (e: Exception) {
-            throw e
-        } finally {
-            scope.cancel()
-        }
+            )
+        ) else throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authorization failed")
     }
 
     /**
      * 成功后记录上传文件数据, 写入image和presignedImage tables
      */
-    @CrossOrigin
-    @PostMapping("api/files/upload")
     suspend fun updateFileCache(
-        @RequestBody body: FileList,
-        @RequestHeader("Authorization") token: String
-    ): Int {
-        val resolvedToken = utils.resolveToken(token)
-        val user = auth.authService().parseJwtToken(resolvedToken)
-        val id = user.id
-        val owner = user.owner
-        val userId = id.let { utils.base64Encoding(it) }
-        val pass = userId.let { rbac.cas().enforce(it, "${owner}_file", "write") }
-        if (!pass) throw Exception("Authorization failed")
-        //get the last {success} objects from s3
-        val scope = CoroutineScope(Dispatchers.IO)
-        try {
-            scope.async {
-                val files = body.files
-                println("files:$files")
-                files.map {
-                    async {
-                        fileRep.createImage(userId, it)
-                    }.await()
-                }
-            }.await()
-            return body.files.size
+        request: ServerRequest
+    ): ServerResponse {
+        return try {
+            val body = request.awaitBody(FileList::class)
+            val token = request.headers().header("Authorization").first() ?: throw ResponseStatusException(
+                HttpStatus.UNAUTHORIZED,
+                "authorization header missing"
+            )
+            val resolvedToken = utils.resolveToken(token)
+            val user = auth.authService().parseJwtToken(resolvedToken)
+            val id = user.id
+            val owner = user.owner
+            val userId = id.let { utils.base64Encoding(it) }
+            val pass = userId.let { rbac.cas().enforce(it, "${owner}_file", "write") }
+            if (!pass) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authorization failed")
+            //get the last {success} objects from s3
+            fileRep.createImage(userId, body.files)
+            ServerResponse.ok().bodyValueAndAwait(body.files.size)
         } catch (e: Exception) {
+            println(e.message)
             throw e
-        } finally {
-            scope.cancel()
         }
     }
 
-    /**
-     * more results when 201, no more when 200
-     */
-    @CrossOrigin
-    @GetMapping("api/files/update")
-    suspend fun uploadExpiredFiles(): ResponseEntity<Unit> {
-        val files = fileRep.getExpiredFiles()
-        val scope = CoroutineScope(Dispatchers.IO)
-        try {
-            scope.async {
-                files.map {
-                    async {
-                        fileRep.updateFile(it)
-                    }.await()
-                }
-            }.await()
-            return if (files.isEmpty()) ResponseEntity<Unit>(HttpStatus.OK)
-            else ResponseEntity<Unit>(HttpStatus.CREATED)
-        } catch (e: Exception) {
-
-            throw e
-        } finally {
-            scope.cancel()
-        }
-    }
-
-    @GetMapping("api/files/{name}")
-    suspend fun getFile(@PathVariable name: String): ResponseEntity<Unit> {
-        val url = aws.getPresignedFile(name)
-        val headers = HttpHeaders()
-        headers.location = URI.create(url)
-        return ResponseEntity<Unit>(headers, HttpStatus.MOVED_PERMANENTLY)
-    }
-
-    @CrossOrigin
-    @DeleteMapping("api/files")
     suspend fun deleteOwnFile(
-        @RequestBody body: FileList,
-        @RequestHeader("Authorization") token: String
-    ): List<String> {
+        request: ServerRequest
+    ): ServerResponse {
         try {
+            val body = request.awaitBody(FileList::class)
+            val token = request.headers().header("Authorization").first() ?: throw ResponseStatusException(
+                HttpStatus.UNAUTHORIZED,
+                "authorization header missing"
+            )
             val resolvedToken = utils.resolveToken(token)
             val user = auth.authService().parseJwtToken(resolvedToken)
             val idCas = user.id
@@ -169,46 +122,55 @@ class FilesController(
                 Image(name, id)
             }
             val author = images.all { it.userId == userId }
-            if (!author) throw Exception("Authorization failed")
+            if (!author) throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authorization failed")
 
-            val scope = CoroutineScope(Dispatchers.IO)
-            try {
-                val res = scope.async {
-                    val keys = images.map { ObjectIdentifier.builder().key("assets/users/$userId/${it.name}").build() }
-                    val dels = Delete.builder()
-                        .objects(keys)
-                        .build()
-                    val delRequest = DeleteObjectsRequest.builder()
-                        .bucket("doggycatty")
-                        .delete(dels)
-                        .build()
-                    //delete database files
-                    fileRep.deleteFiles(names)
-                    s3.s3Client().deleteObjects(delRequest).deleted()
-                }
-                return res.await().map { it.key() }
-            } catch (e: Exception) {
-                println(e.message)
-                throw e
-            } finally {
-                scope.cancel()
-            }
+            val keys = images.map { ObjectIdentifier.builder().key("assets/users/$userId/${it.name}").build() }
+            val dels = Delete.builder()
+                .objects(keys)
+                .build()
+            val delRequest = DeleteObjectsRequest.builder()
+                .bucket("doggycatty")
+                .delete(dels)
+                .build()
+            //delete database files
+            fileRep.deleteFiles(names)
+            val res = s3.s3Client().deleteObjects(delRequest).deleted()
+            return ServerResponse.ok().bodyValueAndAwait(res.map { it.key() })
         } catch (e: Exception) {
             println(e.message)
             throw e
         }
     }
 
-    @CrossOrigin
-    @GetMapping("api/files/uploaded")
-    suspend fun countUploaded(@RequestHeader("Authorization") token: String): Uploaded {
+    suspend fun countUploaded(request: ServerRequest): ServerResponse {
         return try {
+            val token = request.headers().header("Authorization").first() ?: throw ResponseStatusException(
+                HttpStatus.UNAUTHORIZED,
+                "authorization header missing"
+            )
             val resolvedToken = utils.resolveToken(token)
             val user = auth.authService().parseJwtToken(resolvedToken)
             val id = user.id
             val userId = id.let { utils.base64Encoding(it) }
 
-            aws.isOutLimit(userId)
+            ServerResponse.ok().bodyValueAndAwait(aws.isOutLimit(userId))
+        } catch (e: Exception) {
+            println(e.message)
+            throw e
+        }
+    }
+
+    suspend fun correctFilesAndDb(request: ServerRequest): ServerResponse {
+        return try {
+            val userId = request.pathVariable("user")
+            val fileList = aws.getFileList(userId).toList()
+            val fileRecords = fileRep.getFiles(userId)
+            val diffs = fileList.filter { file -> !fileRecords.any { it.name == file.split("/").last() } }
+                .map { it.split("/").last() }
+            if (diffs.isNotEmpty()) {
+                fileRep.createImage(userId, diffs)
+            }
+            ServerResponse.ok().bodyValueAndAwait(diffs)
         } catch (e: Exception) {
             println(e.message)
             throw e

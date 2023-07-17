@@ -1,6 +1,6 @@
 package com.clark.totoro.assets.model
 
-data class LikeModel(val uploaded: Int, val likes: Int, val liked: Int)
+data class LikeModel(val limit: Int, val uploaded: Int, val likes: Int, val liked: Int)
 data class CreateLike(val key: String, val user: String)
 data class LikeQuery(val id: String, val `in`: String, val out: String, val time: Created)
 data class Created(val created: String)
