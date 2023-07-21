@@ -23,6 +23,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("io.projectreactor:reactor-test")
+    testImplementation(kotlin("test"))
     //swagger develop and ui
     implementation("org.springdoc:springdoc-openapi-starter-webflux-ui:2.1.0")
     //java aws sdk v2

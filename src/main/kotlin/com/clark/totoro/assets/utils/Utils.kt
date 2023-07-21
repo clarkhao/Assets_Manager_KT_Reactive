@@ -12,7 +12,6 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.*
 
-
 @Component
 class Utils {
     @Value("\${db.jwt.secret}")
