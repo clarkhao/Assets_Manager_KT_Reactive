@@ -21,28 +21,27 @@ class FileRepository(val verify: VerifyConfig, val aws: FileService) {
 
     @Autowired
     private lateinit var utils: Utils
-    fun createImage(id: String, file: String): Unit {
+    fun createImage(id: String, files: List<String>): Unit {
         val conn: SurrealConnection = SurrealWebSocketConnection(host, 443, true)
         conn.connect(30)
         try {
             SyncSurrealDriver(conn).let { driver ->
                 driver.signIn("clark", "hao102681")
                 driver.use("test", "test")
-                try {
-                    val key = "assets/users/${id}/${file}"
+                files.map {
+                    val key = "assets/users/${id}/${it}"
                     val map = verify.getContentType()
-                    val contentType = map[file.split(".").last()] as String
+                    val contentType = map[it.split(".").last()] as String
                     val image = S3File(key, "", contentType)
-                    val presigned = aws.getPresignedFileUrl(image)
-                    println(presigned)
-                    val query = driver.create(
+                    val current = utils.currentDatetime()
+                    val userId = image.key.substring(13).split("/").first()
+                    val name = image.key.substring(13).split("/").last()
+                    val url = "https://doggycatty.s3.amazonaws.com/$key"
+                    val presigned = PresignedImage(name, current, current, current, url, "publicUser:$userId")
+                    driver.create(
                         "presignedImage:`${presigned.publicUser.split(":").last()}:${presigned.name}`",
                         presigned
                     )
-                    println("query: $query")
-                } catch (e: Exception) {
-                    println(e.message)
-                    throw e
                 }
             }
         } catch (e: Exception) {
@@ -53,7 +52,7 @@ class FileRepository(val verify: VerifyConfig, val aws: FileService) {
         }
     }
 
-    fun getExpiredFiles(): List<PresignedImage> {
+    fun getFiles(userId: String): List<PresignedImage> {
         val conn: SurrealConnection = SurrealWebSocketConnection(host, 443, true)
         conn.connect(30)
         try {
@@ -62,7 +61,7 @@ class FileRepository(val verify: VerifyConfig, val aws: FileService) {
                 driver.use("test", "test")
                 val current = utils.currentDatetime()
                 val query = driver.query(
-                    """select * from presignedImage where "$current" > (expiredTime - 2h) order by expiredTime, name limit 16;""",
+                    """select * from presignedImage where publicUser='publicUser:${userId}';""",
                     null,
                     PresignedImage::class.java
                 )
@@ -189,7 +188,7 @@ class FileRepository(val verify: VerifyConfig, val aws: FileService) {
             SyncSurrealDriver(conn).let { driver ->
                 driver.signIn("clark", "hao102681")
                 driver.use("test", "test")
-                val upload = aws.getUploadCurrent(user.split(":").last())
+                val upload = aws.isOutLimit(user.split(":").last())
                 val likeData =
                     driver.query(
                         """
@@ -202,9 +201,9 @@ class FileRepository(val verify: VerifyConfig, val aws: FileService) {
                         )
                     }
                         .let {
-                            LikeModel(0, it.likes.first().count, it.liked)
+                            LikeModel(0, 0, it.likes.first().count, it.liked)
                         }
-                return likeData.copy(uploaded = upload)
+                return likeData.copy(limit = upload.limit, uploaded = upload.uploaded)
             }
         } catch (e: Exception) {
             println(e.message)

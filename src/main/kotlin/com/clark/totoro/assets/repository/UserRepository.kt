@@ -1,6 +1,7 @@
 package com.clark.totoro.assets.repository
 
 import com.clark.totoro.assets.model.PublicUser
+import com.clark.totoro.assets.model.PublicUserWithId
 import com.clark.totoro.assets.model.User
 import com.clark.totoro.assets.model.UserAuthor
 import com.clark.totoro.assets.utils.Utils
@@ -18,24 +19,20 @@ class UserRepository() {
 
     @Autowired
     private lateinit var utils: Utils
-    fun createUser(user: User): Unit {
+    fun createUser(user: PublicUserWithId): Unit {
         val conn: SurrealConnection = SurrealWebSocketConnection(host, 443, true)
         conn.connect(30)
         try {
             SyncSurrealDriver(conn).let { driver ->
                 driver.signIn("clark", "hao102681")
                 driver.use("test", "test")
-                if (driver.select("user:${user.publicUser}", User::class.java).isEmpty()) {
+                if (driver.select("publicUser:${user.id}", PublicUser::class.java).isEmpty()) {
                     println(
                         driver.create(
-                            "user:${user.publicUser}",
-                            user.copy(publicUser = "publicUser:${user.publicUser}")
+                            "publicUser:${user.id}",
+                            PublicUser(user.name, user.avatar, user.email, user.limit, user.uploaded, user.role)
                         )
                     )
-                    println(driver.create("publicUser:${user.publicUser}", PublicUser(user.name, user.avatar)))
-                } else {
-                    driver.update("user:${user.publicUser}", user.copy(publicUser = "publicUser:${user.publicUser}"))
-                    driver.update("publicUser:${user.publicUser}", PublicUser(user.name, user.avatar))
                 }
             }
         } catch (e: Exception) {
@@ -52,9 +49,9 @@ class UserRepository() {
             SyncSurrealDriver(conn).let { driver ->
                 driver.signIn("clark", "hao102681")
                 driver.use("test", "test")
-                val record = if (id.startsWith("user")) id else "user:${id}"
-                val query = driver.select(record, User::class.java)
-                return if (query.isEmpty()) 0 else query.first().limit
+                val record = if (id.startsWith("publicUser")) id else "publicUser:${id}"
+                val query = driver.select(record, PublicUser::class.java)
+                return if (query.isEmpty()) -1 else query.first().limit
             }
         } catch (e: Exception) {
             throw Exception("query errors")
@@ -63,15 +60,15 @@ class UserRepository() {
         }
     }
 
-    fun updateUserAdmin(id: String, user: UserAuthor): List<User> {
+    fun updateUserAdmin(id: String, user: UserAuthor): List<PublicUser> {
         val conn: SurrealConnection = SurrealWebSocketConnection(host, 443, true)
         conn.connect(30)
         try {
             SyncSurrealDriver(conn).let { driver ->
                 driver.signIn("clark", "hao102681")
                 driver.use("test", "test")
-                val fullUser = driver.select("user:$id", User::class.java)[0]
-                return driver.update("user:${id}", fullUser.copy(limit = user.limit, role = user.role))
+                val fullUser = driver.select("publicUser:$id", PublicUser::class.java)[0]
+                return driver.update("publicUser:${id}", fullUser.copy(limit = user.limit, role = user.role))
             }
         } catch (e: Exception) {
             throw Exception("query errors")

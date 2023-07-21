@@ -21,6 +21,7 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.ListObjectsRequest
 import software.amazon.awssdk.services.s3.model.ListObjectsResponse
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
+import software.amazon.awssdk.services.s3.model.S3Object
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest
 import software.amazon.awssdk.services.s3.presigner.model.PutObjectPresignRequest
 
@@ -34,7 +35,7 @@ class FileService(val s3: S3Config, val verify: VerifyConfig, val userRep: UserR
 
     @Autowired
     private lateinit var utils: Utils
-    fun clientUpload(names: Array<String>, id: String): List<S3FileUrl> {
+    fun clientUpload(names: List<String>, id: String): List<S3FileUrl> {
         return try {
             names.map {
                 PutObjectRequest.builder()
@@ -56,15 +57,10 @@ class FileService(val s3: S3Config, val verify: VerifyConfig, val userRep: UserR
         }
     }
 
-    fun getFileList(page: Int, limit: Int, prefix: String = "assets/users/"): Sequence<S3File> {
+    fun getFileList(id: String): Sequence<String> {
         return getFileListAsync().contents().asSequence()
-            .filter { it.key().startsWith(prefix) }
-            .sortedBy { it.lastModified() }
-            .filterIndexed { index, _ -> index > (page - 1) * limit }
-            .take(limit)
-            .map {
-                S3File(it.key(), it.lastModified().toString(), it.key().split(".").last())
-            }
+            .filter { it.key().startsWith("assets/users/$id") }
+            .map { it.key() }
     }
 
     fun getPresignedFileUrl(file: S3File): PresignedImage {
@@ -90,22 +86,6 @@ class FileService(val s3: S3Config, val verify: VerifyConfig, val userRep: UserR
         }
     }
 
-    //访问单个文件
-    fun getPresignedFile(name: String): String {
-        val request =
-            GetObjectRequest.builder()
-                .bucket("doggycatty")
-                .key("assets/users/$name")
-                .responseContentType(verify.getContentType()[name.split(".").last()])
-                .build()
-        val presignRequest =
-            GetObjectPresignRequest.builder()
-                .signatureDuration(java.time.Duration.ofMinutes(10))
-                .getObjectRequest(request)
-                .build()
-        return s3.presigner().presignGetObject(presignRequest).url().toString()
-    }
-
     //获取s3桶中的对象列表
     fun getFileListAsync(): ListObjectsResponse {
         val request: ListObjectsRequest = ListObjectsRequest.builder()
@@ -114,23 +94,15 @@ class FileService(val s3: S3Config, val verify: VerifyConfig, val userRep: UserR
         return s3.s3Client().listObjects(request)
     }
 
-    suspend fun isOutLimit(id: String): Uploaded {
+    fun isOutLimit(id: String): Uploaded {
         val scope = CoroutineScope(Dispatchers.IO)
         return try {
-            scope.async {
-                try {
-                    val current = async { getUploadCurrent(id) }
-                    val limit = async { userRep.getUploadLimit(id) }
-                    Uploaded(current.await(), limit.await())
-                } catch (e: Exception) {
-                    println(e.message)
-                    throw e
-                }
-            }.await()
+            val current = getUploadCurrent(id)
+            val limit = userRep.getUploadLimit(id)
+            Uploaded(current, limit)
         } catch (e: Exception) {
+            println(e.message)
             throw e
-        } finally {
-            scope.cancel()
         }
     }
 
